@@ -155,16 +155,12 @@ RUN chmod +x start.sh
 # Create Redis config
 RUN echo "port 6379\nsave 60 1\nrdbcompression yes\ndbfilename dump.rdb\ndir /app/data/redis" > /etc/redis/redis.conf
 
-# Install Kafka from a different mirror
-RUN wget https://dlcdn.apache.org/kafka/3.9.0/kafka_2.13-3.9.0.tgz && \
+# Install Kafka from the official Apache Archive (FIXED URL)
+RUN wget https://archive.apache.org/dist/kafka/3.9.0/kafka_2.13-3.9.0.tgz && \
     tar -xzf kafka_2.13-3.9.0.tgz && \
     mv kafka_2.13-3.9.0 /opt/kafka && \
     rm kafka_2.13-3.9.0.tgz && \
     echo "✅ Kafka installed"
-
-# Show directory structure
-RUN echo "📁 Directory structure:" && ls -la && \
-    echo "📁 App directory:" && ls -la app/ || true
 
 # Create non-root user
 RUN useradd -m -u 1000 appuser && \
