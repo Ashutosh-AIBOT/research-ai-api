@@ -3,7 +3,7 @@ FROM python:3.10-slim
 
 WORKDIR /app
 
-# Install system dependencies (including Redis and Kafka)
+# Install system dependencies (including Redis, Kafka, and zstd for Ollama)
 RUN apt-get update && apt-get install -y \
     ffmpeg \
     espeak \
@@ -16,6 +16,7 @@ RUN apt-get update && apt-get install -y \
     git \
     redis-server \
     default-jre-headless \
+    zstd \
     && rm -rf /var/lib/apt/lists/* \
     && echo "✅ System dependencies installed"
 
