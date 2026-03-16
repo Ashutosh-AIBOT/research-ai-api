@@ -26,6 +26,8 @@ from app.redis_client import redis_client
 from app.kafka_client import kafka_client
 from app.config import config
 
+print(f"🔧 Ollama client configured with: {ollama._client._client.base_url}")
+
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
@@ -233,6 +235,8 @@ async def chat(req: dict, key: str = Depends(verify_key)):
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Ollama error: {str(e)}")
+
+
 
 # ========== CODE ENDPOINT ==========
 @app.post("/code")
