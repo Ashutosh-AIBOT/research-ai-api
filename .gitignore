@@ -1,0 +1,64 @@
+# Python
+__pycache__/
+*.py[cod]
+*.so
+.Python
+env/
+venv/
+.env
+*.log
+
+# Models
+/models/
+/model-cache/
+
+# Docker
+docker-compose.override.yml
+*.pid
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Local files
+*.db
+*.sqlite3
+.DS_Store
+
+# Secrets
+**/secrets/
+**/.secret
+
+
+# Python
+__pycache__/
+*.py[cod]
+*.so
+.Python
+
+# Environments
+.env
+venv/
+env/
+ENV/
+
+# Models (don't commit large files)
+/models/
+*.bin
+*.pt
+*.onnx
+
+# IDE
+.vscode/
+.idea/
+
+# Local files
+*.db
+*.sqlite3
+*.wav
+*.mp3
+
+# Docker
+.DS_Store
