@@ -46,13 +46,25 @@ RUN mkdir -p /app/models/whisper \
 # Copy requirements
 COPY requirements.txt .
 
-# Install dependencies with uv
+# Install setuptools FIRST (critical for whisper)
+RUN pip install --no-cache-dir --upgrade pip setuptools==69.5.1 wheel==0.43.0 \
+    && echo "✅ Build tools installed"
+
+# Install numpy before whisper
+RUN pip install --no-cache-dir numpy==1.24.3 \
+    && echo "✅ NumPy installed"
+
+# Install whisper with no-build-isolation
+RUN pip install --no-cache-dir --no-build-isolation openai-whisper==20231117 \
+    && echo "✅ Whisper installed"
+
+# Install dependencies with uv (FIXED httpx version)
 RUN uv pip install --system --no-cache \
     fastapi==0.104.1 \
     uvicorn[standard]==0.24.0 \
     python-multipart==0.0.6 \
     pydantic==2.4.2 \
-    httpx==0.25.1 \
+    httpx==0.25.2 \
     websockets==12.0 \
     aiohttp==3.9.1 \
     aiofiles==23.2.1 \
@@ -65,17 +77,9 @@ RUN uv pip install --system --no-cache \
     python-dotenv==1.0.0 \
     pyyaml==6.0.1 \
     psutil==5.9.6 \
-    numpy==1.24.3 \
-    setuptools==69.5.1 \
-    wheel==0.43.0 \
     aioredis==2.0.1 \
     kafka-python==2.0.2 \
     && echo "✅ Python dependencies installed with uv"
-
-# Install whisper separately
-RUN uv pip install --system --no-cache --no-build-isolation \
-    openai-whisper==20231117 \
-    && echo "✅ Whisper installed"
 
 # Install Ollama
 RUN curl -fsSL https://ollama.com/install.sh | sh \
