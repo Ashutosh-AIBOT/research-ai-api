@@ -16,8 +16,10 @@ class Config:
     REDIS_MAX_MEMORY = os.getenv("REDIS_MAX_MEMORY", "512mb")
     REDIS_TTL = int(os.getenv("REDIS_TTL", 3600))
     
-    # Kafka
-    KAFKA_BOOTSTRAP_SERVERS = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092")
+  # Kafka - Use service name, NOT localhost!
+    KAFKA_BOOTSTRAP_SERVERS = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "kafka:9092")  # This is correct!
+    KAFKA_HOST = os.getenv("KAFKA_HOST", "kafka")  # Service name
+    KAFKA_PORT = int(os.getenv("KAFKA_PORT", 9092))
     KAFKA_TOPIC_REQUESTS = os.getenv("KAFKA_TOPIC_REQUESTS", "ai-requests")
     KAFKA_TOPIC_RESPONSES = os.getenv("KAFKA_TOPIC_RESPONSES", "ai-responses")
     KAFKA_CONSUMER_GROUP = os.getenv("KAFKA_CONSUMER_GROUP", "ai-group")
