@@ -50,16 +50,23 @@ fi
 if [ -f "/opt/kafka/bin/zookeeper-server-start.sh" ]; then
     echo "📦 Starting Zookeeper..."
     /opt/kafka/bin/zookeeper-server-start.sh -daemon /opt/kafka/config/zookeeper.properties 2>/dev/null
-    sleep 3
-    
-    # ========== START KAFKA ==========
-    echo "📦 Starting Kafka for streaming..."
-    /opt/kafka/bin/kafka-server-start.sh -daemon /opt/kafka/config/server.properties 2>/dev/null
     sleep 5
-    if check_service "kafka"; then
-        echo "✅ Kafka started on port 9092"
+    
+    # Check if Zookeeper started
+    if check_service "zookeeper"; then
+        echo "✅ Zookeeper started"
+        
+        # ========== START KAFKA ==========
+        echo "📦 Starting Kafka for streaming..."
+        /opt/kafka/bin/kafka-server-start.sh -daemon /opt/kafka/config/server.properties 2>/dev/null
+        sleep 8
+        if check_service "kafka"; then
+            echo "✅ Kafka started on port 9092"
+        else
+            echo "⚠️ Kafka failed to start - continuing without streaming"
+        fi
     else
-        echo "⚠️ Kafka not running - continuing without streaming"
+        echo "⚠️ Zookeeper failed to start - skipping Kafka"
     fi
 else
     echo "⚠️ Kafka not installed - skipping"
@@ -71,14 +78,14 @@ ollama serve &
 OLLAMA_PID=$!
 
 echo "⏳ Waiting for Ollama..."
-sleep 5
+sleep 8
 
 if kill -0 $OLLAMA_PID 2>/dev/null; then
     echo "✅ Ollama ready (using local models)"
     
     # Show loaded models
     echo "📋 Available Ollama models:"
-    curl -s http://localhost:11434/api/tags | python -m json.tool 2>/dev/null || echo "  ✓ Models pre-loaded"
+    curl -s http://localhost:11434/api/tags | python -m json.tool 2>/dev/null || echo "  ✓ Models will load on first request"
 else
     echo "❌ Ollama failed to start"
     exit 1
@@ -95,6 +102,9 @@ fi
 if check_service "kafka"; then
     echo "🔹 Kafka:     port 9092 (streaming)"
 fi
+if check_service "zookeeper"; then
+    echo "🔹 Zookeeper: port 2181"
+fi
 if [ "$WEBSOCKET_ENABLED" = "true" ]; then
     echo "🔹 WebSocket: ws://0.0.0.0:7860/ws"
 fi
@@ -103,14 +113,18 @@ echo ""
 
 # ========== START FASTAPI with WebSockets ==========
 echo "🚀 Starting FastAPI server with WebSocket support..."
+
+# Check which main.py location exists
 if [ -f "app/main.py" ]; then
-    # If main.py is in app/ directory
+    echo "📁 Using app/main.py"
     uvicorn app.main:app --host 0.0.0.0 --port 7860 --ws websockets --loop asyncio
 elif [ -f "main.py" ]; then
-    # If main.py is in root directory
+    echo "📁 Using main.py"
     uvicorn main:app --host 0.0.0.0 --port 7860 --ws websockets --loop asyncio
 else
     echo "❌ Could not find main.py"
+    echo "🔍 Searching for main.py..."
+    find . -name "main.py" -type f | head -5
     exit 1
 fi
 
