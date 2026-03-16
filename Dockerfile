@@ -19,8 +19,8 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/* \
     && echo "✅ System dependencies installed"
 
-# Install Kafka
-RUN wget https://downloads.apache.org/kafka/3.9.0/kafka_2.13-3.9.0.tgz && \
+# Install Kafka from the official Apache Archive (CORRECT URL)
+RUN wget https://archive.apache.org/dist/kafka/3.9.0/kafka_2.13-3.9.0.tgz && \
     tar -xzf kafka_2.13-3.9.0.tgz && \
     mv kafka_2.13-3.9.0 /opt/kafka && \
     rm kafka_2.13-3.9.0.tgz && \
@@ -46,17 +46,7 @@ RUN mkdir -p /app/models/whisper \
 # Copy requirements
 COPY requirements.txt .
 
-# ========== FIXED: Install setuptools system-wide FIRST ==========
-RUN pip install --no-cache-dir --upgrade pip setuptools==69.5.1 wheel==0.43.0
-
-# ========== FIXED: Install numpy before whisper ==========
-RUN pip install --no-cache-dir numpy==1.24.3
-
-# ========== FIXED: Install whisper with no-build-isolation ==========
-RUN pip install --no-cache-dir --no-build-isolation openai-whisper==20231117 \
-    && echo "✅ Whisper installed"
-
-# ========== Install remaining dependencies with uv ==========
+# Install dependencies with uv
 RUN uv pip install --system --no-cache \
     fastapi==0.104.1 \
     uvicorn[standard]==0.24.0 \
@@ -75,9 +65,17 @@ RUN uv pip install --system --no-cache \
     python-dotenv==1.0.0 \
     pyyaml==6.0.1 \
     psutil==5.9.6 \
+    numpy==1.24.3 \
+    setuptools==69.5.1 \
+    wheel==0.43.0 \
     aioredis==2.0.1 \
     kafka-python==2.0.2 \
     && echo "✅ Python dependencies installed with uv"
+
+# Install whisper separately
+RUN uv pip install --system --no-cache --no-build-isolation \
+    openai-whisper==20231117 \
+    && echo "✅ Whisper installed"
 
 # Install Ollama
 RUN curl -fsSL https://ollama.com/install.sh | sh \
@@ -115,17 +113,6 @@ RUN ollama serve & \
     pkill ollama && \
     echo "✅ Ollama models downloaded" || echo "⚠️ Ollama pulls failed"
 
-# 5. Download sentiment model (optional)
-RUN python -c "\
-try: \
-    from transformers import pipeline; \
-    print('📥 Downloading sentiment model...'); \
-    pipeline('sentiment-analysis', model='distilbert-base-uncased-finetuned-sst-2-english', cache_dir='/app/models/transformers'); \
-    print('✅ Sentiment model downloaded'); \
-except Exception as e: \
-    print(f'⚠️ Sentiment model download failed: {e}'); \
-" || echo "⚠️ Sentiment download failed"
-
 # ========== SET ENVIRONMENT VARIABLES ==========
 ENV WHISPER_MODEL_PATH=/app/models/whisper
 ENV TRANSFORMERS_CACHE=/app/models/transformers
@@ -155,12 +142,12 @@ RUN chmod +x start.sh
 # Create Redis config
 RUN echo "port 6379\nsave 60 1\nrdbcompression yes\ndbfilename dump.rdb\ndir /app/data/redis" > /etc/redis/redis.conf
 
-# Install Kafka from the official Apache Archive (FIXED URL)
-RUN wget https://archive.apache.org/dist/kafka/3.9.0/kafka_2.13-3.9.0.tgz && \
-    tar -xzf kafka_2.13-3.9.0.tgz && \
-    mv kafka_2.13-3.9.0 /opt/kafka && \
-    rm kafka_2.13-3.9.0.tgz && \
-    echo "✅ Kafka installed"
+# Create Kafka config
+RUN echo "broker.id=0\nlisteners=PLAINTEXT://0.0.0.0:9092\nlog.dirs=/app/data/kafka\nzookeeper.connect=localhost:2181" > /opt/kafka/config/server.properties
+
+# Show directory structure
+RUN echo "📁 Directory structure:" && ls -la && \
+    echo "📁 App directory:" && ls -la app/ || true
 
 # Create non-root user
 RUN useradd -m -u 1000 appuser && \
