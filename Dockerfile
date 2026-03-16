@@ -89,7 +89,7 @@ ENV OLLAMA_MODELS=/app/models/ollama
 ENV XDG_CACHE_HOME=/app/models/cache
 
 # Copy application code
-COPY main.py config.py start.sh ./
+COPY app/main.py app/config.py start.sh ./
 RUN chmod +x start.sh
 
 # Create non-root user
