@@ -1,8 +1,14 @@
+# Add at the very top of main.py
+import setuptools  # This ensures pkg_resources is available
+import pkg_resources  # Explicit import for whisper
+
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 import logging
 import asyncio
+
 
 import redis.asyncio as redis
 from aiokafka import AIOKafkaProducer

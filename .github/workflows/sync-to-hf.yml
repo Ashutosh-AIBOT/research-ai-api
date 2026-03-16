@@ -1,0 +1,8 @@
+name: Sync to Hugging Face
+on: [push]
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - run: git push https://Ashutosh1975:${{ secrets.HF_TOKEN }}@huggingface.co/spaces/Ashutosh1975/research-ai-api main
