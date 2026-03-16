@@ -1,5 +1,5 @@
 #!/bin/bash
-# start.sh - COMPLETE with all services
+# start.sh - COMPLETE with all services (FIXED)
 
 echo "🚀 Starting Research AI API with all services..."
 
@@ -10,6 +10,9 @@ export HF_HOME=/app/models
 export PIPER_VOICE=/app/voices/en_US-lessac-medium.onnx
 export OLLAMA_MODELS=/app/models/ollama
 export WEBSOCKET_ENABLED=true
+
+# Create PID array to track all services
+declare -a SERVICE_PIDS=()
 
 # Function to check if service is running
 check_service() {
@@ -23,14 +26,30 @@ check_service() {
 # Function to cleanup all services
 cleanup() {
     echo "🛑 Shutting down all services..."
-    kill $OLLAMA_PID 2>/dev/null
-    /opt/kafka/bin/kafka-server-stop.sh 2>/dev/null
-    /opt/kafka/bin/zookeeper-server-stop.sh 2>/dev/null
+    
+    # Kill all background processes
+    for pid in "${SERVICE_PIDS[@]}"; do
+        kill $pid 2>/dev/null
+    done
+    
+    # Stop Kafka and Zookeeper if running
+    if [ -f "/opt/kafka/bin/kafka-server-stop.sh" ]; then
+        /opt/kafka/bin/kafka-server-stop.sh 2>/dev/null
+    fi
+    
+    if [ -f "/opt/kafka/bin/zookeeper-server-stop.sh" ]; then
+        /opt/kafka/bin/zookeeper-server-stop.sh 2>/dev/null
+    fi
+    
+    # Stop Redis
     redis-cli shutdown 2>/dev/null
+    
     echo "✅ All services stopped"
     exit 0
 }
-trap cleanup SIGTERM SIGINT
+
+# Set trap after function definition
+trap cleanup SIGTERM SIGINT EXIT
 
 # ========== START REDIS ==========
 echo "📦 Starting Redis for caching..."
@@ -49,7 +68,7 @@ fi
 # ========== START ZOOKEEPER (for Kafka) ==========
 if [ -f "/opt/kafka/bin/zookeeper-server-start.sh" ]; then
     echo "📦 Starting Zookeeper..."
-    /opt/kafka/bin/zookeeper-server-start.sh -daemon /opt/kafka/config/zookeeper.properties 2>/dev/null
+    /opt/kafka/bin/zookeeper-server-start.sh -daemon /opt/kafka/config/zookeeper.properties
     sleep 5
     
     # Check if Zookeeper started
@@ -58,10 +77,11 @@ if [ -f "/opt/kafka/bin/zookeeper-server-start.sh" ]; then
         
         # ========== START KAFKA ==========
         echo "📦 Starting Kafka for streaming..."
-        /opt/kafka/bin/kafka-server-start.sh -daemon /opt/kafka/config/server.properties 2>/dev/null
+        /opt/kafka/bin/kafka-server-start.sh -daemon /opt/kafka/config/server.properties
         sleep 8
         if check_service "kafka"; then
             echo "✅ Kafka started on port 9092"
+            SERVICE_PIDS+=($(pgrep -f kafka))
         else
             echo "⚠️ Kafka failed to start - continuing without streaming"
         fi
@@ -76,6 +96,7 @@ fi
 echo "📦 Starting Ollama from local models..."
 ollama serve &
 OLLAMA_PID=$!
+SERVICE_PIDS+=($OLLAMA_PID)
 
 echo "⏳ Waiting for Ollama..."
 sleep 8
@@ -117,10 +138,16 @@ echo "🚀 Starting FastAPI server with WebSocket support..."
 # Check which main.py location exists
 if [ -f "app/main.py" ]; then
     echo "📁 Using app/main.py"
-    uvicorn app.main:app --host 0.0.0.0 --port 7860 --ws websockets --loop asyncio
+    uvicorn app.main:app --host 0.0.0.0 --port 7860 --ws websockets --loop asyncio &
+    FASTAPI_PID=$!
+    SERVICE_PIDS+=($FASTAPI_PID)
+    wait $FASTAPI_PID
 elif [ -f "main.py" ]; then
     echo "📁 Using main.py"
-    uvicorn main:app --host 0.0.0.0 --port 7860 --ws websockets --loop asyncio
+    uvicorn main:app --host 0.0.0.0 --port 7860 --ws websockets --loop asyncio &
+    FASTAPI_PID=$!
+    SERVICE_PIDS+=($FASTAPI_PID)
+    wait $FASTAPI_PID
 else
     echo "❌ Could not find main.py"
     echo "🔍 Searching for main.py..."
@@ -128,5 +155,5 @@ else
     exit 1
 fi
 
-# Cleanup when FastAPI stops
-cleanup
+# Script will wait here until FastAPI exits
+# Cleanup will be called automatically via trap
