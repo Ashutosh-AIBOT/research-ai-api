@@ -1,70 +1,139 @@
+# app/utils/ollama_helper.py
 import httpx
 import asyncio
 import logging
-from typing import AsyncGenerator, Optional
+import os
+import subprocess
+from typing import AsyncGenerator
 from app.config import config
 
 logger = logging.getLogger(__name__)
 
 class OllamaHelper:
     def __init__(self):
-        # FIXED: Use 127.0.0.1 instead of localhost (prevents DNS resolution issues)
         self.base_url = "http://127.0.0.1:11434"
-        
-        # Create client with proper timeouts and retries
         self.client = httpx.AsyncClient(
             timeout=httpx.Timeout(config.REQUEST_TIMEOUT, connect=5.0),
             limits=httpx.Limits(max_keepalive_connections=5, max_connections=10)
         )
-        self._model_cache = {}  # Track loaded models
-        
-        # Add connection test on init
+        self._model_cache = {}
         logger.info(f"🔧 OllamaHelper initialized with base_url: {self.base_url}")
+        
+        # Run model check after startup
+        asyncio.create_task(self._delayed_model_check())
     
-    async def _check_connection(self):
-        """Test connection to Ollama"""
+    async def _delayed_model_check(self):
+        """Check models after services are fully started"""
+        await asyncio.sleep(10)  # Wait for Ollama to fully initialize
+        await self._force_register_models()
+        await self.ensure_models_available()
+    
+    async def _force_register_models(self):
+        """Force register models using ollama CLI"""
         try:
-            response = await self.client.get(f"{self.base_url}/api/tags", timeout=5.0)
+            logger.info("🔧 Attempting to force register models via CLI...")
+            
+            # List of models to register
+            models = ["phi3:mini", "deepseek-coder:1.3b", "moondream"]
+            
+            for model in models:
+                try:
+                    # Try to create model from existing blobs
+                    cmd = f"ollama pull {model}"
+                    logger.info(f"🔄 Running: {cmd}")
+                    
+                    process = await asyncio.create_subprocess_shell(
+                        cmd,
+                        stdout=asyncio.subprocess.PIPE,
+                        stderr=asyncio.subprocess.PIPE
+                    )
+                    stdout, stderr = await process.communicate()
+                    
+                    if process.returncode == 0:
+                        logger.info(f"✅ Successfully registered {model}")
+                        self._model_cache[model] = True
+                    else:
+                        logger.warning(f"⚠️ Failed to register {model}: {stderr.decode()}")
+                        
+                except Exception as e:
+                    logger.error(f"Error registering {model}: {e}")
+                    
+        except Exception as e:
+            logger.error(f"Force register error: {e}")
+    
+    async def ensure_models_available(self):
+        """Check what models Ollama sees"""
+        try:
+            logger.info("🔍 Checking available Ollama models...")
+            response = await self.client.get(f"{self.base_url}/api/tags")
+            
             if response.status_code == 200:
                 models = response.json().get('models', [])
-                logger.info(f"✅ Ollama connection successful. Available models: {[m['name'] for m in models]}")
-                return True
+                if models:
+                    model_names = [m['name'] for m in models]
+                    logger.info(f"✅ Ollama models found: {model_names}")
+                    
+                    # Cache the models
+                    for model in model_names:
+                        self._model_cache[model] = True
+                else:
+                    logger.warning("⚠️ No models found in Ollama registry!")
+                    
+                    # Try one more time with direct file copy approach
+                    await self._copy_models_directly()
             else:
-                logger.error(f"❌ Ollama connection failed with status: {response.status_code}")
-                return False
+                logger.error(f"❌ Failed to get models: {response.status_code}")
+                
         except Exception as e:
-            logger.error(f"❌ Cannot connect to Ollama at {self.base_url}: {e}")
-            return False
+            logger.error(f"Error checking models: {e}")
+    
+    async def _copy_models_directly(self):
+        """Last resort: Try to copy model files directly"""
+        try:
+            logger.info("📁 Attempting direct model registration...")
+            
+            # Check if models directory exists
+            models_dir = "/app/models/ollama"
+            if os.path.exists(models_dir):
+                logger.info(f"📁 Models directory found: {models_dir}")
+                
+                # List contents
+                for root, dirs, files in os.walk(models_dir):
+                    for file in files:
+                        if file.endswith('.bin') or 'blob' in file:
+                            logger.info(f"📄 Found model file: {os.path.join(root, file)}")
+            
+            # Try to create a model manifest
+            manifest_dir = f"{models_dir}/manifests/registry.ollama.ai/library"
+            os.makedirs(manifest_dir, exist_ok=True)
+            
+            logger.info("✅ Direct model check complete")
+            
+        except Exception as e:
+            logger.error(f"Direct copy error: {e}")
     
     async def generate(self, model: str, prompt: str) -> str:
-        """Generate response (model loads on first use)"""
+        """Generate response with automatic model loading"""
         try:
-            # Log attempt
             logger.info(f"🔄 Generating with model {model}")
             
-            # Check if model exists in cache (optional)
+            # If model not in cache, try to load it
             if model not in self._model_cache:
-                logger.info(f"📥 First use of {model} - checking availability...")
-                # Verify model exists
-                try:
-                    tags_response = await self.client.get(f"{self.base_url}/api/tags", timeout=5.0)
-                    if tags_response.status_code == 200:
-                        available_models = [m['name'] for m in tags_response.json().get('models', [])]
-                        if model not in available_models:
-                            # Try with :latest suffix
-                            model_with_latest = f"{model}:latest"
-                            if model_with_latest in available_models:
-                                model = model_with_latest
-                                logger.info(f"✅ Using {model} instead")
-                            else:
-                                logger.error(f"❌ Model {model} not found in: {available_models}")
-                                raise Exception(f"Model {model} not found")
-                except Exception as e:
-                    logger.warning(f"Could not verify models: {e}")
+                logger.info(f"📥 Model {model} not in cache, attempting to load...")
                 
-                self._model_cache[model] = True
+                # Try to pull the model first
+                try:
+                    pull_response = await self.client.post(
+                        f"{self.base_url}/api/pull",
+                        json={"name": model, "insecure": True}
+                    )
+                    if pull_response.status_code == 200:
+                        logger.info(f"✅ Successfully pulled {model}")
+                        self._model_cache[model] = True
+                except Exception as pull_error:
+                    logger.warning(f"Pull failed, but may already exist: {pull_error}")
             
-            # Make the actual generation request
+            # Generate response
             response = await self.client.post(
                 f"{self.base_url}/api/generate",
                 json={
@@ -78,38 +147,36 @@ class OllamaHelper:
                 }
             )
             
-            # Check response
             if response.status_code != 200:
                 error_text = await response.aread()
-                logger.error(f"Ollama error response: {response.status_code} - {error_text}")
+                logger.error(f"Ollama error: {response.status_code} - {error_text}")
+                
+                # If model not found, try with :latest suffix
+                if "not found" in error_text.decode():
+                    model_with_latest = f"{model}:latest"
+                    logger.info(f"🔄 Retrying with {model_with_latest}")
+                    
+                    response = await self.client.post(
+                        f"{self.base_url}/api/generate",
+                        json={
+                            "model": model_with_latest,
+                            "prompt": prompt,
+                            "stream": False,
+                            "options": {
+                                "num_predict": 512,
+                                "temperature": 0.7
+                            }
+                        }
+                    )
+                    if response.status_code == 200:
+                        result = response.json()
+                        return result["response"]
+                
                 response.raise_for_status()
             
             result = response.json()
             return result["response"]
             
-        except httpx.ConnectError as e:
-            logger.error(f"🚨 Connection error to Ollama at {self.base_url}: {e}")
-            # Try alternative port or localhost as fallback
-            logger.info("🔄 Attempting fallback connection to localhost...")
-            try:
-                fallback_response = await httpx.AsyncClient(timeout=5.0).post(
-                    "http://localhost:11434/api/generate",
-                    json={
-                        "model": model,
-                        "prompt": prompt,
-                        "stream": False,
-                        "options": {
-                            "num_predict": 512,
-                            "temperature": 0.7
-                        }
-                    }
-                )
-                if fallback_response.status_code == 200:
-                    logger.info("✅ Fallback connection successful!")
-                    return fallback_response.json()["response"]
-            except:
-                pass
-            raise Exception(f"Cannot connect to Ollama. Is it running?")
         except Exception as e:
             logger.error(f"Ollama generate error: {e}")
             raise
@@ -117,10 +184,6 @@ class OllamaHelper:
     async def generate_stream(self, model: str, prompt: str) -> AsyncGenerator[str, None]:
         """Stream response token by token"""
         try:
-            if model not in self._model_cache:
-                logger.info(f"📥 First use of {model} - loading now...")
-                self._model_cache[model] = True
-            
             async with self.client.stream(
                 "POST",
                 f"{self.base_url}/api/generate",
@@ -149,19 +212,14 @@ class OllamaHelper:
                             if data.get("done", False):
                                 break
                         except json.JSONDecodeError:
-                            logger.warning(f"Invalid JSON: {line}")
                             continue
         except Exception as e:
-            logger.error(f"Ollama stream error: {e}")
+            logger.error(f"Stream error: {e}")
             yield f"Error: {str(e)}"
     
     async def generate_with_image(self, model: str, prompt: str, image_b64: str) -> str:
         """Generate with image input"""
         try:
-            if model not in self._model_cache:
-                logger.info(f"📥 First use of {model} - loading now...")
-                self._model_cache[model] = True
-            
             response = await self.client.post(
                 f"{self.base_url}/api/generate",
                 json={
@@ -174,7 +232,7 @@ class OllamaHelper:
             response.raise_for_status()
             return response.json()["response"]
         except Exception as e:
-            logger.error(f"Ollama image error: {e}")
+            logger.error(f"Image error: {e}")
             raise
     
     async def close(self):
@@ -182,11 +240,3 @@ class OllamaHelper:
 
 # Create singleton instance
 ollama_helper = OllamaHelper()
-
-# Optional: Test connection on module load
-async def test_connection():
-    await asyncio.sleep(2)  # Give Ollama time to start
-    await ollama_helper._check_connection()
-
-# Run test in background
-asyncio.create_task(test_connection())

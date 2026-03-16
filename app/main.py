@@ -17,16 +17,13 @@ import redis.asyncio as redis
 from aiokafka import AIOKafkaProducer
 import aiofiles
 import httpx
-import ollama
 import torch
 
-# Import routes
-from app.routes import chat, code, stt, tts, translate, image, health, models
+# Import from app modules
 from app.redis_client import redis_client
 from app.kafka_client import kafka_client
 from app.config import config
-
-print(f"🔧 Ollama client configured with: {ollama._client._client.base_url}")
+from app.utils.ollama_helper import ollama_helper
 
 # Configure logging
 logging.basicConfig(
@@ -87,8 +84,6 @@ def get_sentiment_model():
     logger.info(f"✅ Sentiment model loaded in {time.time()-start:.2f}s")
     return model
 
-# Ollama models are handled by Ollama itself - they load on first request
-
 # ========== CREATE FASTAPI APP ==========
 app = FastAPI(
     title="Ultra-Fast AI API",
@@ -109,41 +104,44 @@ app.add_middleware(
 app.add_middleware(GZipMiddleware, minimum_size=1000)
 
 # ========== REDIS & KAFKA CLIENTS ==========
-redis_client = None
-kafka_producer = None
+redis_client_instance = None
+kafka_producer_instance = None
 
 @app.on_event("startup")
 async def startup_event():
     """Initialize connections on startup (NO models loaded yet!)"""
-    global redis_client, kafka_producer
+    global redis_client_instance, kafka_producer_instance
     
     logger.info("🚀 Starting Ultra-Fast AI API with ON-DEMAND model loading...")
     
     # Connect to Redis
     try:
-        redis_client = redis.Redis(
+        redis_client_instance = redis.Redis(
             host=os.getenv("REDIS_HOST", "localhost"),
             port=int(os.getenv("REDIS_PORT", 6379)),
             decode_responses=True,
             socket_connect_timeout=2
         )
-        await redis_client.ping()
+        await redis_client_instance.ping()
         logger.info("✅ Redis connected")
     except Exception as e:
         logger.warning(f"⚠️ Redis not available: {e}")
-        redis_client = None
+        redis_client_instance = None
     
-    # Connect to Kafka
+    # Connect to Kafka - Use service name 'kafka' NOT localhost!
     try:
-        kafka_producer = AIOKafkaProducer(
-            bootstrap_servers=os.getenv("KAFKA_BROKER", "localhost:9092"),
-            request_timeout_ms=3000
+        kafka_broker = os.getenv("KAFKA_BROKER", "kafka:9092")  # Critical fix!
+        logger.info(f"🔄 Connecting to Kafka at {kafka_broker}")
+        kafka_producer_instance = AIOKafkaProducer(
+            bootstrap_servers=kafka_broker,
+            request_timeout_ms=10000,
+            max_request_size=1048576
         )
-        await kafka_producer.start()
+        await kafka_producer_instance.start()
         logger.info("✅ Kafka connected")
     except Exception as e:
         logger.warning(f"⚠️ Kafka not available: {e}")
-        kafka_producer = None
+        kafka_producer_instance = None
     
     logger.info("✅ Services initialized. Models will load on first use!")
 
@@ -152,11 +150,14 @@ async def shutdown_event():
     """Clean up connections on shutdown"""
     logger.info("🛑 Shutting down...")
     
-    if redis_client:
-        await redis_client.close()
+    if redis_client_instance:
+        await redis_client_instance.close()
     
-    if kafka_producer:
-        await kafka_producer.stop()
+    if kafka_producer_instance:
+        await kafka_producer_instance.stop()
+    
+    # Close ollama helper
+    await ollama_helper.close()
     
     logger.info("✅ All connections closed")
 
@@ -164,6 +165,9 @@ async def shutdown_event():
 @app.get("/")
 async def root():
     """Root endpoint"""
+    # Check Kafka status
+    kafka_status = "✅ Connected" if kafka_producer_instance else "❌ Not connected"
+    
     return {
         "message": "🚀 Ultra-Fast AI API",
         "version": "3.0",
@@ -173,10 +177,10 @@ async def root():
             "On-demand model loading (models load only when used)",
             "Redis caching (5-20ms responses for repeated queries)",
             "Kafka streaming (real-time token streaming)",
-            "WebSocket support",
-            f"Redis: {'✅ Connected' if redis_client else '❌ Not connected'}",
-            f"Kafka: {'✅ Connected' if kafka_producer else '❌ Not connected'}"
-        ]
+            "WebSocket support"
+        ],
+        "redis": "✅ Connected" if redis_client_instance else "❌ Not connected",
+        "kafka": kafka_status
     }
 
 # ========== HEALTH CHECK ==========
@@ -186,8 +190,8 @@ async def health():
     return {
         "status": "✅ running",
         "mode": "on-demand loading",
-        "redis": "connected" if redis_client else "disconnected",
-        "kafka": "connected" if kafka_producer else "disconnected",
+        "redis": "connected" if redis_client_instance else "disconnected",
+        "kafka": "connected" if kafka_producer_instance else "disconnected",
         "models": {
             "whisper": "not loaded (loads on first /stt)",
             "translator": "not loaded (loads on first /translate)",
@@ -204,28 +208,26 @@ async def chat(req: dict, key: str = Depends(verify_key)):
     
     # Check Redis cache first
     cache_key = f"chat:{req.get('message', '')}"
-    if redis_client:
+    if redis_client_instance:
         try:
-            cached = await redis_client.get(cache_key)
+            cached = await redis_client_instance.get(cache_key)
             if cached:
                 return {
                     "reply": json.loads(cached),
                     "cached": True,
                     "time_sec": round(time.time() - start_time, 3)
                 }
-        except:
-            pass
+        except Exception as e:
+            logger.warning(f"Cache read error: {e}")
     
-    # Generate response (Ollama model loads automatically on first use)
+    # Generate response using ollama_helper
     try:
-        response = ollama.chat(model='phi3:mini', messages=[
-            {'role': 'user', 'content': req.get('message', '')}
-        ])
-        reply = response['message']['content']
+        prompt = f"User: {req.get('message', '')}\nAssistant:"
+        reply = await ollama_helper.generate("phi3:mini", prompt)
         
         # Cache it
-        if redis_client:
-            await redis_client.setex(cache_key, 3600, json.dumps(reply))
+        if redis_client_instance:
+            await redis_client_instance.setex(cache_key, 3600, json.dumps(reply))
         
         return {
             "reply": reply,
@@ -234,9 +236,8 @@ async def chat(req: dict, key: str = Depends(verify_key)):
             "time_sec": round(time.time() - start_time, 3)
         }
     except Exception as e:
+        logger.error(f"Chat error: {e}")
         raise HTTPException(status_code=500, detail=f"Ollama error: {str(e)}")
-
-
 
 # ========== CODE ENDPOINT ==========
 @app.post("/code")
@@ -245,15 +246,16 @@ async def code(req: dict, key: str = Depends(verify_key)):
     start_time = time.time()
     
     try:
-        response = ollama.chat(model='deepseek-coder:1.3b', messages=[
-            {'role': 'user', 'content': req.get('message', '')}
-        ])
+        prompt = f"Write code: {req.get('message', '')}\nOnly output code:"
+        reply = await ollama_helper.generate("deepseek-coder:1.3b", prompt)
+        
         return {
-            "code": response['message']['content'],
+            "code": reply,
             "model": "deepseek-coder:1.3b",
             "time_sec": round(time.time() - start_time, 3)
         }
     except Exception as e:
+        logger.error(f"Code error: {e}")
         raise HTTPException(status_code=500, detail=f"Ollama error: {str(e)}")
 
 # ========== STT ENDPOINT (Loads Whisper on first call) ==========
@@ -268,16 +270,21 @@ async def speech_to_text(file: UploadFile = File(...), key: str = Depends(verify
     # Save uploaded file temporarily
     import tempfile
     tmp = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
-    tmp.write(await file.read())
+    content = await file.read()
+    tmp.write(content)
     tmp.close()
     
     try:
+        logger.info(f"🎤 Transcribing audio ({len(content)} bytes)...")
         result = whisper_model.transcribe(tmp.name, fp16=False)
         return {
             "text": result["text"],
             "language": result["language"],
             "time_sec": round(time.time() - start_time, 3)
         }
+    except Exception as e:
+        logger.error(f"STT error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
     finally:
         os.unlink(tmp.name)
 
@@ -291,15 +298,21 @@ async def translate(req: dict, key: str = Depends(verify_key)):
     tokenizer, model = get_translator_model()
     
     text = req.get('text', '')
-    tokens = tokenizer([text], return_tensors="pt", padding=True)
-    translated = model.generate(**tokens, max_length=128)
-    result = tokenizer.decode(translated[0], skip_special_tokens=True)
+    logger.info(f"🔄 Translating: {text[:50]}...")
     
-    return {
-        "original": text,
-        "translated": result,
-        "time_sec": round(time.time() - start_time, 3)
-    }
+    try:
+        tokens = tokenizer([text], return_tensors="pt", padding=True)
+        translated = model.generate(**tokens, max_length=128)
+        result = tokenizer.decode(translated[0], skip_special_tokens=True)
+        
+        return {
+            "original": text,
+            "translated": result,
+            "time_sec": round(time.time() - start_time, 3)
+        }
+    except Exception as e:
+        logger.error(f"Translation error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 # ========== IMAGE ENDPOINT ==========
 @app.post("/image")
@@ -315,23 +328,29 @@ async def image_understand(
     import base64
     
     tmp = tempfile.NamedTemporaryFile(suffix=".jpg", delete=False)
-    tmp.write(await file.read())
+    content = await file.read()
+    tmp.write(content)
     tmp.close()
     
     try:
+        logger.info(f"🖼️ Analyzing image ({len(content)} bytes)...")
+        
         with open(tmp.name, "rb") as f:
             img_b64 = base64.b64encode(f.read()).decode()
         
-        response = ollama.generate(
-            model='moondream',
-            prompt=question,
-            images=[img_b64]
+        response = await ollama_helper.generate_with_image(
+            "moondream", 
+            question, 
+            img_b64
         )
         
         return {
-            "answer": response['response'],
+            "answer": response,
             "time_sec": round(time.time() - start_time, 3)
         }
+    except Exception as e:
+        logger.error(f"Image error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
     finally:
         os.unlink(tmp.name)
 
@@ -341,23 +360,30 @@ async def text_to_speech(req: dict, key: str = Depends(verify_key)):
     """Text to speech - uses espeak (no model loading needed)"""
     import subprocess
     import tempfile
+    from fastapi.responses import FileResponse
     
     text = req.get('text', '')
     tmp = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
     
     try:
+        logger.info(f"🔊 Generating speech for: {text[:50]}...")
         cmd = f'espeak "{text}" -w {tmp.name} -s 150 -v en'
         subprocess.run(cmd, shell=True, check=True, timeout=10)
         
-        from fastapi.responses import FileResponse
         return FileResponse(tmp.name, media_type="audio/wav", filename="speech.wav")
+    except subprocess.TimeoutExpired:
+        raise HTTPException(status_code=500, detail="TTS timeout")
     except Exception as e:
+        logger.error(f"TTS error: {e}")
         raise HTTPException(status_code=500, detail=f"TTS error: {str(e)}")
 
 # ========== MODELS INFO ==========
 @app.get("/models")
 async def list_models(key: str = Depends(verify_key)):
     """List all available models and their loading status"""
+    whisper_status = "loaded" if 'get_whisper_model' in dir() and get_whisper_model.cache_info().currsize > 0 else "not loaded"
+    translator_status = "loaded" if 'get_translator_model' in dir() and get_translator_model.cache_info().currsize > 0 else "not loaded"
+    
     return {
         "endpoints": {
             "/chat": "phi3:mini (loads on first chat)",
@@ -370,21 +396,7 @@ async def list_models(key: str = Depends(verify_key)):
             "/models": "this list"
         },
         "loading_status": {
-            "whisper": "loaded" if 'get_whisper_model' in dir() and get_whisper_model.cache_info().currsize > 0 else "not loaded",
-            "translator": "loaded" if 'get_translator_model' in dir() and get_translator_model.cache_info().currsize > 0 else "not loaded"
-        },
-        "cache_stats": {
-            "whisper": get_whisper_model.cache_info()._asdict() if 'get_whisper_model' in dir() else {},
-            "translator": get_translator_model.cache_info()._asdict() if 'get_translator_model' in dir() else {}
+            "whisper": whisper_status,
+            "translator": translator_status
         }
     }
-
-# Include routers (if you have separate route files)
-# app.include_router(chat.router, tags=["AI - Chat"])
-# app.include_router(code.router, tags=["AI - Code"])
-# app.include_router(stt.router, tags=["AI - Speech"])
-# app.include_router(tts.router, tags=["AI - Speech"])
-# app.include_router(translate.router, tags=["AI - Translation"])
-# app.include_router(image.router, tags=["AI - Vision"])
-# app.include_router(health.router, tags=["System"])
-# app.include_router(models.router, tags=["Info"])
