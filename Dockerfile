@@ -155,9 +155,13 @@ RUN chmod +x start.sh
 # Create Redis config
 RUN echo "port 6379\nsave 60 1\nrdbcompression yes\ndbfilename dump.rdb\ndir /app/data/redis" > /etc/redis/redis.conf
 
-# Create Kafka config
-RUN echo "broker.id=0\nlisteners=PLAINTEXT://0.0.0.0:9092\nlog.dirs=/app/data/kafka\nzookeeper.connect=localhost:2181" > /opt/kafka/config/server.properties
-
+# Install Kafka (FIXED URL)
+RUN wget https://archive.apache.org/dist/kafka/3.9.0/kafka_2.13-3.9.0.tgz && \
+    tar -xzf kafka_2.13-3.9.0.tgz && \
+    mv kafka_2.13-3.9.0 /opt/kafka && \
+    rm kafka_2.13-3.9.0.tgz && \
+    echo "✅ Kafka installed"
+    
 # Show directory structure
 RUN echo "📁 Directory structure:" && ls -la && \
     echo "📁 App directory:" && ls -la app/ || true
