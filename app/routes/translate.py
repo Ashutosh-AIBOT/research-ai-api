@@ -1,61 +1,60 @@
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 import time
-import torch
-from transformers import MarianMTModel, MarianTokenizer
+import logging
+from functools import lru_cache
 from app.config import config
 from app.routes.auth import verify_key
-from app.utils.cache_helper import cache_helper
-import logging
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
-# Load translator models (pre-downloaded)
-tokenizer = None
-model = None
-
-@router.on_event("startup")
-async def load_translator():
-    global tokenizer, model
-    try:
-        tokenizer = MarianTokenizer.from_pretrained(config.TRANSLATOR_CACHE_DIR)
-        model = MarianMTModel.from_pretrained(config.TRANSLATOR_CACHE_DIR)
-        logger.info("✅ Translator model loaded")
-    except Exception as e:
-        logger.error(f"❌ Failed to load translator: {e}")
-
 class TranslateRequest(BaseModel):
     text: str
+    source_lang: str = "hi"
+    target_lang: str = "en"
+
+# On-demand model loading - loads only when first called
+@lru_cache(maxsize=1)
+def get_translator_model():
+    """Load Translator model only on first request"""
+    logger.info("📥 Loading Translator model (first time only)...")
+    from transformers import MarianMTModel, MarianTokenizer
+    start = time.time()
+    tokenizer = MarianTokenizer.from_pretrained(
+        config.TRANSLATOR_MODEL, 
+        cache_dir=config.TRANSLATOR_CACHE_DIR
+    )
+    model = MarianMTModel.from_pretrained(
+        config.TRANSLATOR_MODEL, 
+        cache_dir=config.TRANSLATOR_CACHE_DIR
+    )
+    logger.info(f"✅ Translator model loaded in {time.time()-start:.2f}s")
+    return tokenizer, model
 
 @router.post("/translate")
 async def translate(req: TranslateRequest, key: str = Depends(verify_key)):
-    """Translate Hindi to English"""
+    """Translate Hindi to English - model loads on FIRST request only"""
     start = time.time()
     
-    if not model or not tokenizer:
-        raise HTTPException(status_code=503, detail="Translator model not loaded")
+    # Load model on demand (only first time)
+    tokenizer, model = get_translator_model()
     
-    async def translate_text():
-        try:
-            tokens = tokenizer([req.text], return_tensors="pt", padding=True)
-            translated = model.generate(**tokens, max_length=128)
-            result = tokenizer.decode(translated[0], skip_special_tokens=True)
-            return {"translated": result}
-        except Exception as e:
-            logger.error(f"Translation error: {e}")
-            raise
+    text = req.text
+    logger.info(f"🔄 Translating: {text[:50]}...")
     
-    result = await cache_helper.get_or_compute(
-        "translate",
-        translate_text,
-        config.REDIS_TTL,
-        req.text
-    )
-    
-    return {
-        **result,
-        "original": req.text,
-        "time_sec": round(time.time() - start, 2),
-        "cached": "cached" in result
-    }
+    try:
+        tokens = tokenizer([text], return_tensors="pt", padding=True)
+        translated = model.generate(**tokens, max_length=128)
+        result = tokenizer.decode(translated[0], skip_special_tokens=True)
+        
+        return {
+            "original": text,
+            "translated": result,
+            "source_lang": req.source_lang,
+            "target_lang": req.target_lang,
+            "time_sec": round(time.time() - start, 2)
+        }
+    except Exception as e:
+        logger.error(f"Translation error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))

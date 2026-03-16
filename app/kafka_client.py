@@ -1,91 +1,49 @@
+from aiokafka import AIOKafkaProducer, AIOKafkaConsumer
 import json
 import asyncio
-from aiokafka import AIOKafkaProducer, AIOKafkaConsumer
-from app.config import config
 import logging
+from app.config import config
 
 logger = logging.getLogger(__name__)
 
 class KafkaClient:
     def __init__(self):
         self.producer = None
-        self.consumers = {}
-        self.enabled = config.STREAMING_ENABLED
-        
+        self.consumer = None
+    
     async def connect_producer(self):
         """Connect Kafka producer"""
-        if not self.enabled:
-            logger.info("Kafka streaming is disabled")
-            return
-            
         try:
             self.producer = AIOKafkaProducer(
                 bootstrap_servers=config.KAFKA_BOOTSTRAP_SERVERS,
-                value_serializer=lambda v: json.dumps(v).encode('utf-8'),
-                compression_type="gzip"
+                request_timeout_ms=3000
             )
             await self.producer.start()
-            logger.info("✅ Connected to Kafka producer")
+            logger.info("✅ Kafka producer connected")
         except Exception as e:
-            logger.error(f"❌ Kafka producer connection failed: {e}")
-            self.enabled = False
+            logger.warning(f"⚠️ Kafka connection failed: {e}")
+            self.producer = None
     
-    async def send_request(self, request_id: str, data: dict):
-        """Send request to Kafka"""
-        if not self.enabled or not self.producer:
-            return False
-        try:
-            await self.producer.send(
-                config.KAFKA_TOPIC_REQUESTS,
-                key=request_id.encode(),
-                value=data
-            )
-            return True
-        except Exception as e:
-            logger.error(f"Kafka send error: {e}")
-            return False
+    async def close(self):
+        if self.producer:
+            await self.producer.stop()
     
     async def send_response_chunk(self, request_id: str, chunk: str, is_last: bool = False):
         """Send response chunk to Kafka"""
-        if not self.enabled or not self.producer:
-            return False
+        if not self.producer:
+            return
+        
         try:
             await self.producer.send(
                 config.KAFKA_TOPIC_RESPONSES,
-                key=request_id.encode(),
-                value={"chunk": chunk, "last": is_last, "request_id": request_id}
+                json.dumps({
+                    "request_id": request_id,
+                    "chunk": chunk,
+                    "is_last": is_last,
+                    "timestamp": asyncio.get_event_loop().time()
+                }).encode()
             )
-            return True
         except Exception as e:
-            logger.error(f"Kafka send chunk error: {e}")
-            return False
-    
-    async def create_consumer(self, group_id: str, topic: str):
-        """Create a new consumer"""
-        if not self.enabled:
-            return None
-            
-        consumer = AIOKafkaConsumer(
-            topic,
-            bootstrap_servers=config.KAFKA_BOOTSTRAP_SERVERS,
-            group_id=group_id,
-            value_deserializer=lambda m: json.loads(m.decode('utf-8')),
-            auto_offset_reset="latest",
-            enable_auto_commit=True
-        )
-        await consumer.start()
-        self.consumers[group_id] = consumer
-        return consumer
-    
-    async def close(self):
-        """Close all connections"""
-        if self.producer:
-            await self.producer.stop()
-        
-        for consumer in self.consumers.values():
-            await consumer.stop()
-        
-        logger.info("Kafka connections closed")
+            logger.warning(f"Kafka send error: {e}")
 
-# Global Kafka instance
 kafka_client = KafkaClient()

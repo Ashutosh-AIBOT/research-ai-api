@@ -1,12 +1,12 @@
-from fastapi import APIRouter, Depends, UploadFile, File, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
 import time
 import tempfile
 import os
 import base64
+import logging
 from app.config import config
 from app.utils.ollama_helper import ollama_helper
 from app.routes.auth import verify_key
-import logging
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -17,31 +17,33 @@ async def image_understand(
     question: str = "What is in this image?",
     key: str = Depends(verify_key)
 ):
-    """Understand images using moondream"""
+    """Image understanding - moondream loads on FIRST request only"""
     start = time.time()
     
-    # Save uploaded image
     tmp = tempfile.NamedTemporaryFile(suffix=".jpg", delete=False)
-    tmp.write(await file.read())
+    content = await file.read()
+    tmp.write(content)
     tmp.close()
     
     try:
-        # Convert to base64
+        logger.info(f"🖼️ Analyzing image ({len(content)} bytes) with question: {question}")
+        
         with open(tmp.name, "rb") as f:
             img_b64 = base64.b64encode(f.read()).decode()
         
-        # Generate response
-        answer = await ollama_helper.generate_with_images(question, [img_b64])
+        # This will load moondream on first call
+        response = await ollama_helper.generate_with_image(
+            config.IMAGE_MODEL, 
+            question, 
+            img_b64
+        )
         
         return {
-            "answer": answer,
-            "question": question,
+            "answer": response,
             "time_sec": round(time.time() - start, 2)
         }
-        
     except Exception as e:
-        logger.error(f"Image understanding error: {e}")
+        logger.error(f"Image analysis error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
     finally:
         os.unlink(tmp.name)
-

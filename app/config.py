@@ -6,10 +6,10 @@ load_dotenv()
 
 class Config:
     # API
-    API_KEY = os.getenv("API_KEY", "default-key-change-me")
+    API_KEY = os.getenv("API_KEY", "mypassword123")
     
     # Redis
-    REDIS_HOST = os.getenv("REDIS_HOST", "redis")
+    REDIS_HOST = os.getenv("REDIS_HOST", "localhost")
     REDIS_PORT = int(os.getenv("REDIS_PORT", 6379))
     REDIS_DB = int(os.getenv("REDIS_DB", 0))
     REDIS_PASSWORD = os.getenv("REDIS_PASSWORD", None)
@@ -17,12 +17,12 @@ class Config:
     REDIS_TTL = int(os.getenv("REDIS_TTL", 3600))
     
     # Kafka
-    KAFKA_BOOTSTRAP_SERVERS = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "kafka:9092")
+    KAFKA_BOOTSTRAP_SERVERS = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092")
     KAFKA_TOPIC_REQUESTS = os.getenv("KAFKA_TOPIC_REQUESTS", "ai-requests")
     KAFKA_TOPIC_RESPONSES = os.getenv("KAFKA_TOPIC_RESPONSES", "ai-responses")
     KAFKA_CONSUMER_GROUP = os.getenv("KAFKA_CONSUMER_GROUP", "ai-group")
     
-    # Models
+    # Models - All will load on-demand!
     WHISPER_MODEL = os.getenv("WHISPER_MODEL", "tiny")
     CHAT_MODEL = os.getenv("CHAT_MODEL", "phi3:mini")
     CODE_MODEL = os.getenv("CODE_MODEL", "deepseek-coder:1.3b")
